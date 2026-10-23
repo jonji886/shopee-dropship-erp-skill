@@ -3,16 +3,18 @@
 > 在 `mac_computer_use_tool(plane="bu")` 的 cell 里使用，`import aha_browser_use as bu`。
 > 选择器是实测值，ERP/遨虾改版会失效；失效时改用 `bu.find("文本", search_type="interaction")` 重新定位 ref，不要死磕 CSS。
 > `bu.js()` 只接受表达式字符串：用普通 `(function(){...})()` IIFE，**不要用箭头函数**（会报 must be JSON serializable）；返回值必须可序列化；串内避免字面 `\n`。
+>
+> **第1/2节是兜底**：Step1/2 默认走 `scripts/aibuy_rank_client.py` 只读接口（见 api-candidates.md）；仅当接口报错/改版/风控时，才用下面浏览器流程切榜、点找同款。第3-6节始终走浏览器。
 
 ## 目录
-- 1. 恢复榜单序列（导航→切国家→切类目→翻页）
-- 2. 点"找同款"并提取结果页1688 offer链接
+- 1.【兜底】恢复榜单序列（导航→切国家→切类目→翻页）
+- 2.【兜底】点"找同款"并提取结果页1688 offer链接
 - 3. 批量链接采集并读取成功/失败数
 - 4. 公共采集箱对账（货源ID）
 - 5. 全选+勾选店铺+提交铺货
 - 6. 发布记录状态统计与失败原因
 
-## 1. 恢复榜单序列
+## 1.【兜底·接口失效时】恢复榜单序列
 
 `back` 会丢国家/类目/翻页状态，每次进入结果页返回后都重跑本序列。国家/类目用 `bu.find` 文本点击兜底，避免写死易变CSS。
 
@@ -30,9 +32,9 @@ def restore(country="马来西亚", category_kw="Kelengkapan", page=2):
     time.sleep(2)
 ```
 
-## 2. 点"找同款"并提取结果页offer链接
+## 2.【兜底·接口失效时】点"找同款"并提取结果页offer链接
 
-`idx` 是当前页第几个"找同款"按钮（从0起）。点击后结果页列出候选，**人工挑选匹配项**，不要自动取第一条。
+`idx` 是当前页第几个"找同款"按钮（从0起）。点击后结果页列出候选，由 AI 按 selection-rules.md 第三节同类/月销/评分规则自动挑最优，不要盲取第一条。
 
 ```python
 import aha_browser_use as bu, time
@@ -82,20 +84,21 @@ print(bu.js("(function(){var m=document.body.innerText.match(/共\\d+条/);retur
 print(bu.js("(function(){var m=document.body.innerText.match(/货源ID:\\s*\\d+/g);return m?m.join(', '):'none';})()"))
 ```
 
-## 5. 全选+勾选店铺+提交铺货
+## 5. 勾选本次清单商品+自动选店铺+提交铺货（全自动，不暂停问人）
 
-提交前**人工确认店铺、结算价模板、库存来源、非预售**。配置窗沿用已保存模板直接"保存"，回到列表再点"开始铺货"。
+只勾选 Step2 清单内的货源ID行，**禁止全选采集箱历史商品**。店铺唯一直接勾；多店铺取列表第一个（默认/已绑定轻出海店铺），记录所选店铺名。结算价模板、库存"使用商品来源"、非预售沿用 ERP 已保存配置，不重算、不询问。仅登录/验证码/支付弹窗才转人工接管。
 
 ```python
 import aha_browser_use as bu, time
-# 全选商品行
-print(bu.js("(function(){var cbs=Array.from(document.querySelectorAll('input[type=checkbox]')).filter(function(c){var r=c.closest('tr');return r&&r.textContent.indexOf('货源ID')>=0});cbs.forEach(function(c){if(!c.checked)c.click();});return 'checked '+cbs.length;})()"))
+TARGETS = ["681683584352"]  # 替换为本次 Step2 的货源ID/offerId 清单
+# 只勾选命中本次清单的行，不碰历史商品
+print(bu.js("(function(){var rows=Array.from(document.querySelectorAll('table tbody tr'));var n=0;for(var i=0;i<rows.length;i++){var t=rows[i].innerText;var hit="+str(TARGETS)+".some(function(id){return t.indexOf(id)>=0;});if(hit){var cb=rows[i].querySelector('input[type=checkbox]');if(cb&&!cb.checked){cb.click();n++;}}}return 'checked '+n;})()"))
 btn = bu.find("铺货至Shopee轻出海", search_type="interaction", limit=1); bu.click(btn.first); time.sleep(3)
-shop = bu.find("轻出海", search_type="interaction", limit=1); bu.click(shop.first); time.sleep(1)
+# 自动勾选第一个轻出海店铺（唯一店铺直接勾；多店铺取列表首个）
+bu.js("(function(){var mod=document.querySelector('.ant-modal-body')||document.body;var cbs=mod.querySelectorAll('input[type=checkbox]');for(var i=0;i<cbs.length;i++){if(cbs[i].closest('label,div')&&cbs[i].offsetParent!==null&&!cbs[i].checked){cbs[i].click();break;}}})()")
+time.sleep(1)
 print(bu.js("(function(){var m=document.body.innerText.match(/已选\\s*\\d+\\s*个店铺/);return m?m[0]:'na';})()"))
-# 配置窗沿用模板：点可见"保存"
-bu.js("(function(){var bs=Array.from(document.querySelectorAll('button')).filter(function(x){return x.offsetParent!==null&&x.textContent.trim()==='保存'});if(bs.length)bs[bs.length-1].click();})()")
-time.sleep(2)
+# 沿用已保存模板，直接点"开始铺货"
 start = bu.find("开始铺货", search_type="interaction", limit=1); bu.click(start.first); time.sleep(6)
 print(bu.js("(function(){var m=document.body.innerText.match(/已提交\\s*\\d+\\s*个商品[^\\n]*/);return m?m[0]:'pending';})()"))
 ```
