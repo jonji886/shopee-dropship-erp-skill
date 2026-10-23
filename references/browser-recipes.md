@@ -66,6 +66,16 @@ print(bu.js("(function(){var m=document.body.innerText.match(/本次共采集[^\
 
 进 `#/cross/moving/sharedGoods`，核对条数与货源ID是否等于采集清单。
 
+**关键坑：默认"未认领"筛选会隐藏已自动认领的商品。** 新采集商品常已被自动认领，默认只看未认领会显示"共0条"，不是没采到。先删掉顶部"未认领"筛选tag（点其×），再查询，才能看到全部（可能上百条）。
+
+```python
+import aha_browser_use as bu, time
+# 删除"未认领"筛选tag（找选中项关闭按钮）
+bu.js("(function(){var c=document.querySelector('.ant-select-selection-item-content');if(!c)return;var item=c.closest('.ant-select-selection-overflow-item');var x=item&&item.querySelector('svg,button,i');if(x)x.parentNode.click();})()")
+time.sleep(1)
+q=bu.find("查询",search_type="interaction",limit=1); bu.click(q.first); time.sleep(3)
+```
+
 ```python
 bu.navigate("https://erp.kuaidizs.cn/index.html#/cross/moving/sharedGoods"); time.sleep(4)
 print(bu.js("(function(){var m=document.body.innerText.match(/共\\d+条/);return m?m[0]:'?';})()"))
