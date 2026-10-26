@@ -1,0 +1,5 @@
+scripts/erp_token.txt
+aibuy_data/
+__pycache__/
+*.pyc
+.DS_Store
