@@ -125,6 +125,13 @@ python3 $SK distribute --ids 932606971652 --shop 123456789012345 --out ./erp_dat
 # Step5 选店铺辅助（只读查询，铺货目标预查）
 python3 $SK shops --platform shopees --out ./erp_data
 # 输出含预查结论：有效授权店铺数 + 轻出海商户店数 + 默认将勾选的首个商户店；无商户店会明确警告
+
+# Step4.6 标题清洗（写操作，基于 queryDetailByNumIid + updateErpItemByNumIid）
+python3 scripts/clean_title.py clean --num-iid <ERP内部ID>           # 单条清洗
+python3 scripts/clean_title.py clean --num-iid <ID> --dry-run        # 只看不写
+python3 scripts/clean_title.py clean-all --size 100 --out ./erp_data # 批量扫采集箱
+# 自动剔除：平台名（亚马逊/Amazon/ebay/Etsy/wish/速卖通/AliExpress）+ 行话前缀（跨境/外贸/出口/海外/原单/尾单/专供/代发）
+# 保留产品词；标题无变化则跳过；写回后自动回读验证
 ```
 
 输出：`--out` 目录下 `collect_result.csv/json`、`shared_goods.csv/json`、`publish_logs.csv/json`、`shops.csv/json`、`distribute_result.csv/json`（UTF-8 带 BOM，Excel 直接打开）。
@@ -162,6 +169,11 @@ python3 $SK shops --platform shopees --out ./erp_data
 11. **铺货目标必须是轻出海商户店**：`targetSellerId` 传普通站点授权店（无 `shopType=SHOPEE_MERCHANT`）虽能提交成功，但目标店铺不参与轻出海铺货，任务不会正常发布；弹窗只显示商户店，客户端默认也只选商户店。
 12. **每批 ≤4 个 + 串行**：前端每批4个并发提交；客户端改为串行分批，避免 707 限流。批量铺货（>4个）会自动分批，勿手拆。
 13. **distribute 是写操作且不可撤回**：提交即创建发布任务（会真实占用发布额度 137/6000）。只对已通过 Step4.5 去重、确认要铺的清单执行；失败原因通过 logs 回查（多为商品本身问题，如 SKU 价差>7倍、类目不符），不是接口问题。
+14. **`success` 也可能带"目标平台店铺商品编码已存在 已自动填充源商品ID为商品编码"附注**：这是 ERP 检测到编码占位后自动填充复用，**不是失败**，按 success 计。真正失败的是带"1、此资料编码在此卖家内已存在,请修改后再提交"前缀的双重冲突记录。
+15. **"此资料编码在此卖家内已存在"（重铺撞残留，2026-10 实测）**：同一商品多次铺货（含失败）后 Shopee 侧已占位该编码。处理：先查该货源ID历史 logs 是否有 success（有则已上架不用再铺）；仅残留则用 `updateErpItemByNumIid` 改 `erpCode` 加后缀（`<offerId>-2/-3`）轮换后再 distribute；**每个新编码提交失败也会再次占位，轮换不能无限**，最终需在 Shopee 轻出海后台清理残留。同一批次务必先修完结构（repair_erp_item.py）再换码，避免结构好了但码已被上次失败占用。
+16. **collect 后 SKU=0 的品要换款**：详情接口 `skus=[]` 的单规格款提交必报"商品规格属性不能为空"；采集后先验证 SKU>0 再铺货（有属性 SKU ≥1 即可，如"静电除尘干巾-100片"单 SKU 可过）。
+17. **queryDetailByNumIid 连续调用限流（2026-10-29 实测）**：同进程内连续两次 queryDetail（如 clean_title.py 先 query 算标题、update 里又 query 拉 dto）即使间隔 1s，后端也可能返回空 data（非 707，是静默空响应）。**对策**：①复用已拉到的 dto 传给 update，不重复 query；②批量模式间隔 ≥2s；③update 失败自动等 3s 重试 1 次；④仍失败则用 `update_erp_item.py update` 独立进程跑（无连续调用包袱）。
+18. **改 ERP 采集箱标题 ≠ 改 Shopee 线上标题（2026-10-29 实测）**：`updateErpItemByNumIid` 只改采集箱内的货源标题，已发布到 Shopee 站点的线上商品标题不会自动同步。distribute 是"创建新发布任务"不是"更新已有商品"。已发布商品要改线上标题：①在 Shopee 轻出海后台手动编辑（推荐，出单品再改）；②换 erpCode 后缀重新铺货（创建新商品，旧品仍在，会重复，不推荐）。新铺货商品从采集箱取标题，所以 Step4.6 清洗保证的是"新上架的品标题干净"。
 
 ## 5. 回退
 

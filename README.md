@@ -23,12 +23,12 @@
 
 ## 流程（6 步，接口直连）
 
-1. **接口拉榜单 + AI 判定最优**（全自动）：`aibuy_rank_client.py` 按站点/榜单/类目拉候选，AI 按红线剔除 → 倒挂/拥挤/平价微利过滤 → 毛利空间/同款数/类目安全打分，取最高分进入下一步，不暂停问人。
+1. **接口拉榜单 + AI 判定最优**（全自动）：`aibuy_rank_client.py` 按站点/榜单/类目拉候选，AI 按红线剔除 → 倒挂/拥挤/平价微利过滤 → 毛利空间/同款数/类目安全打分，取最高分进入下一步，不暂停问人。**默认口径（新店/新账号）**：飙升榜+新品榜（蓝海，避开红海热销）；`--strategy newbie` 默认展开 MY+PH 两站（规则见 selection-rules.md 第七节），可 `--strategy volume|premium|custom --market blue|red|balanced` 覆盖。
 2. **接口检索 1688 现货 + AI 自动匹配**（全自动）：关键词搜 + 图搜并行取候选，AI 按同类硬过滤 → 评分/月销/起订量资格线 → 自动选 1 个最优 offer；无合格候选跳过并记录原因。接口失效时回退浏览器"找同款"兜底。
 3. **批量链接采集（接口直连）**：`erp_api_client.py collect --ids <offerId清单>` 直接提交采集（`POST /item/center/batchPluginCollectItem`），返回成功/失败/跳过数；已采集过的 ID 幂等算成功。
 4. **公共采集箱对账（接口直连）**：`erp_api_client.py items --ids <货源ID>` 核对条数与货源 ID，拿 `platNumIid`（货源ID）与 `numIid`（ERP 内部 ID）映射。
-5. **去重 + 铺货提交（接口直连）**：`logs --months 3-6` 做发布记录去重（任意状态算占用）→ `distribute --ids <货源ID>` 铺货提交（`POST /item/distribute/batchPublish`，自动映射 numIid、预查并默认选中轻出海商户店 `shopType=SHOPEE_MERCHANT`、每批 4 个串行提交）。仅登录/验证码/支付由用户接管。
-6. **发布记录统计 + 失败自动归因（接口直连）**：`erp_api_client.py logs --months 1 --advice` 输出 发布中/审核中（中间态）/发布成功/发布失败，失败记录自动对照归因库（selection-rules.md 第五节）附加「严重度/处理建议」（整品失败=弃品换单规格、可重试=改后重提、单站点=忽略或补站点、撞红线=剔除）。
+5. **去重 + 标题清洗 + 铺货提交（接口直连）**：`logs --months 3-6` 做发布记录去重（任意状态算占用）→ 本地台账去重（`published_ledger.py`）→ **Step4.6 标题清洗**（`clean_title.py`，剔除平台名/跨境行话前缀，防违规扣分+保搜索权重）→ `distribute --ids <货源ID>` 铺货提交（`POST /item/distribute/batchPublish`，自动映射 numIid、预查并默认选中轻出海商户店 `shopType=SHOPEE_MERCHANT`、每批 4 个串行提交）。**提交前四道拦截自检**（选品价差/主图防盗链/库存来源/标题清洗，实测拦下 60%+ 失败）。仅登录/验证码/支付由用户接管。
+6. **发布记录统计 + 失败自动归因（接口直连）**：`erp_api_client.py logs --months 1 --advice` 输出 发布中/审核中（中间态）/发布成功/发布失败，失败记录自动对照归因库（selection-rules.md 第五节）附加「严重度/处理建议」（整品失败=弃品换单规格、可重试=改后重提或 `repair_erp_item.py` 修复结构、单站点=忽略或补站点、撞红线=剔除）。
 
 ## 自动化边界
 
@@ -57,11 +57,14 @@ shopee-dropship-erp-skill/
 ├── scripts/
 │   ├── aibuy_rank_client.py          # Step1/2 遨虾只读 mtop 客户端（纯标准库）
 │   ├── erp_api_client.py             # Step3-6 ERP 接口客户端：token/items/logs/shops/collect/distribute（含 --advice 归因）
+│   ├── clean_title.py                # Step4.6 标题清洗：剔除平台名+跨境行话前缀（clean/clean-all，支持 --dry-run）
+│   ├── repair_erp_item.py            # 发布失败商品结构修复（single_tier/price_cap/fix_imgs/unify_pic）
+│   ├── update_erp_item.py            # 采集箱商品编辑（query/update/batch 改标题，内置限速+回读验证）
 │   └── published_ledger.py           # Step4.5 本地已发台账（check/append/list）
 └── references/
-    ├── api-candidates.md             # 遨虾接口族、命令、字段口径、限制与回退方式
-    ├── erp-api.md                    # ERP 接口契约（含 batchPublish/归因）、token 维护、已知坑
-    ├── selection-rules.md            # 红线、AI 过滤项、Step1 打分、Step2 自动匹配、失败归因库
+    ├── api-candidates.md             # 遨虾接口族、命令、字段口径、限制与回退方式（含站点类目树独立要点）
+    ├── erp-api.md                    # ERP 接口契约（含 batchPublish/归因/标题清洗）、token 维护、已知坑
+    ├── selection-rules.md            # 红线、AI 过滤项、Step1 打分、Step2 自动匹配、四附拦截自检、失败归因库、站点策略映射
     └── browser-recipes.md            # bu 片段（第1/2节遨虾兜底，第3-7节 ERP 兜底）
 ```
 

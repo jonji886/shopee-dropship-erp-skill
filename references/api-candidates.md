@@ -27,6 +27,8 @@
 
 - platformCode：`Shopee_ZX`（SG/BR/MY/VN/TW/ID/PH/MX/TH）、`TikTok_XS`、`Amazon_XS`（仅作风向参考，非本链路铺货平台）。
 - tabCode：`overseas_hot_selling_list_v1` 热销、`overseas_soaring_list` 飙升、`overseas_new_product_list` 新品。
+- **默认口径（新店/新账号，2026-10 更新）**：候选优先 `overseas_soaring_list`（飙升）＋ `overseas_new_product_list`（新品），抓"刚起量"品、避开红海；热销榜仅作风向验证。用户明确要求跟热销时例外。
+- **站点默认口径（--strategy 展开，规则见 selection-rules.md 第七节）**：`--strategy newbie` 默认展开为 **MY + PH** 两站（新手练手：均衡稳 + 低门槛高潜）；`volume`=ID+VN、`premium`=SG+TH/MY、`custom`=用户站点列表；`--market blue|red|balanced` 决定榜单组合（blue=飙升+新品、red=热销+飙升、balanced=三榜合并）。用户显式传 `--site` 指定站点时以用户为准，不套策略映射。
 - 限制：每榜 total 封顶约 500；pageSize=50 可用、=100 返回空；必须先选类目；`cateId` 与 `cateLevel` 必须同层，错层返回成功但 0 条；检索 totalRecords 封顶约 2000。
 
 ## 2. Step1 拉榜单 + AI自动判定最优（自动取数，自动打分）
@@ -74,3 +76,15 @@ python3 $SK search-image --image-url "<oppImageUrl>" --pages 1 --out ./aibuy_dat
 ## 4. 回退
 
 接口报错/改版/风控时，改用 `browser-recipes.md` 第1节（浏览器恢复榜单序列）与第2节（点找同款提offer链接），由 AI 按同一套红线/打分规则判断选品；Step3–6 始终走浏览器。
+
+## 5. 站点类目树独立（2026-10-28 实测，重要）
+
+**每个站点有自己独立的类目树与类目 ID**（按站点语言返回：MY=马来语、TH=泰语、SG/PH=英文、BR=葡语、MX=西语、VN=越南语、TW=繁体中文、ID=印尼语）。取数前**必须先用该站点的 `categorylist` 拿本站类目 ID，再 `getitemlist`**；跨站点复用类目 ID 会返回 SUCCESS 但 0 条（拿错钥匙）。
+
+- **全站点实测（匿名即可，无需登录）**：MY/TH/PH/SG/VN/TW/BR/MX/ID 的 `categorylist` 均返回类目树，`getitemlist` 首个类目均返回数据（total 426–500）。**不存在"某站点无数据"**——之前误判 TH 无数据，是因为拿 SG 的类目 ID 去测 TH。
+- **踩坑要点**：
+  1. 曾观察到 MY 的 `categorylist` 先后返回马来语/英语两套类目名与不同 ID（疑似后端数据源轮换/缓存）；**每次执行先 `categorylist` 重新取当前类目 ID，不要缓存 ID 复用**。
+  2. 网页端落地页 URL 里的 `siteCode`/`cateLvl1Id`/`tabCode` 参数可直连 `getitemlist` 验证（用户实测：TH 新品榜 cateId=`163cdd17915b4e62d32547f74b39d89a` 匿名 total=500）。
+  3. 已知可用类目 ID 示例（2026-10-28，仅当日有效，执行前仍以 categorylist 为准）：MY 宠物 `30516df0e18347953a9cec3b4f99725d`；TH 新品宠物 `163cdd17915b4e62d32547f74b39d89a`；PH 文具 `c1f85df712d17921ea9353fd94adb086`。
+  4. 无 SLA，快照随时可能轮换：执行前用 1 次 `items` 探活，失效即回退浏览器（`browser-recipes.md` 第1节）。
+  5. **`--strategy newbie`（默认 MY+PH）多站执行**：先分别对 MY、PH 各调一次 `categorylist` 取本站当前类目 ID（MY 按马来语、PH 按英语），再逐站 `getitemlist`；两站之间及与其他站一律不复用类目 ID（跨站复用返回 SUCCESS 但 0 条）。站点组合由策略映射展开（见 selection-rules.md 第七节），脚本仍一次一个站点执行。

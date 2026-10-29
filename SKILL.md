@@ -55,6 +55,8 @@ description: "Shopee 轻出海铺货实操，仅适用于『快递助手ERP跨�
 
 ### Step 1 接口拉榜单 + AI判定最优商品（全自动，不停下问人）
 - 用 `scripts/aibuy_rank_client.py`：`sites` 选站点 → `tabs` 选榜（热销/飙升/新品）→ `categories` 逐层选类目(L1/L2/L3) → `items` 分页导出候选 CSV/JSON。命令与字段见 `references/api-candidates.md` 第2节。
+- **榜单默认口径（新店/新账号，2026-10 更新）**：默认选 **飙升榜 `overseas_soaring_list` ＋ 新品榜 `overseas_new_product_list`**（抓刚起量的潜力款，避开已成红海的热销品）；热销榜 `overseas_hot_selling_list_v1` 仅作风向验证。用户明确要求跟热销时除外。
+- **输入参数组（Step1 可选，缺省用默认口径，规则见 `references/selection-rules.md` 第七节）**：`--strategy newbie|volume|premium|custom`（默认 `newbie`，展开站点组合：新手=**MY+PH**、放量=ID+VN、精品=SG+TH/MY、自定义=用户站点列表）、`--market blue|red|balanced`（默认 `blue`：蓝海=飙升+新品、红海=热销+飙升、均衡=三榜合并）、`--price-band <客单价带>`、`--budget <数量/预算>`、`--cats <类目白名单>`、`--weight-max <kg>`（默认 1.0，轻小件优先）。用户显式指定参数即覆盖默认口径；未指定按第七节映射展开执行。站点/榜单/类目仍按脚本参数切换，策略只决定"拉哪些站点×榜单×类目的组合"。
 - 站点/榜单/类目通过参数切换，不存在浏览器 `back` 丢状态问题；每榜封顶约500条，`cateId` 与 `cateLevel` 必须同层。
 - **AI 自动执行筛选与打分（规则见 `references/selection-rules.md`），不向用户请求确认：**
   1. 按 rankId 去重；
@@ -86,17 +88,29 @@ description: "Shopee 轻出海铺货实操，仅适用于『快递助手ERP跨�
 3. **跨链接同款**：标题归一化（去规格/促销/品牌词）后近似、主图雷同、同款中位价接近的，只保留打分最高的1个，其余剔除。
 - 两道都放行的清单才交给 Step5；提交成功后用 `published_ledger.py append` 把本次 offerId 写回台账。
 
+### Step 4.6 标题清洗（接口直连，全自动，不暂停问人）
+- **背景**：1688 货源标题常自带"跨境/外贸/亚马逊/ebay/速卖通/海外代购/原单尾单"等营销前缀。这些词在 Shopee 端有两个问题：①其他平台名（亚马逊/ebay 等）违反 Shopee《跨境卖家政策指引手册》1.1.1.4"关键词/品牌、属性滥用"，首次下架、再犯删除扣分；②"跨境/外贸"是中国卖家行话，本地买家从不搜，却堆在标题前 30 字符（吃 70% 搜索权重），把核心词挤出去。
+- **接口（默认）**：对 Step4.5 放行的清单逐条清洗标题
+  `python3 scripts/clean_title.py clean --num-iid <ERP内部ID>`（单条）
+  或批量扫采集箱：`python3 scripts/clean_title.py clean-all --out ./erp_data`。
+  自动剔除：平台名（亚马逊/Amazon/ebay/Etsy/wish/速卖通/AliExpress，任意位置）+ 行话前缀（跨境/外贸/出口/海外/原单/尾单/专供/代发，仅开头连续）；保留产品词（90L/大容量/材质/品类名）。
+- **先 dry-run 看效果**：`--dry-run` 只显示不写入，确认清洗规则不误删产品词后再正式执行。
+- **线上标题边界（重要）**：ERP 采集箱标题改干净后，**已发布到 Shopee 站点的线上标题不会自动同步**（distribute 是创建新任务不是更新已有商品）。已发布商品要改线上标题：在 Shopee 轻出海后台手动编辑（出单品再改，不值得为冗余词重铺）；Step4.6 清洗保证的是"新上架的品标题干净"，不追溯旧品。
+- **批量清洗注意**：35 条以上批量跑时，queryDetailByNumIid 连续调用会触发后端静默限流（返回空 data）；脚本已内置 2s 间隔 + 失败自动重试 1 次，仍失败的条目用 `update_erp_item.py update --num-iid <ID> --erp-code <code> --title "<新标题>"` 独立进程补跑。
+
 ### Step 5 自动铺货提交（接口直连，全自动，不暂停问人）
 - **接口（默认，写操作）**：对已通过 Step4.5 去重的货源ID清单直接提交
   `python3 scripts/erp_api_client.py distribute --ids <本次货源ID逗号分隔> --out ./erp_data`。
   命令内置：采集箱按货源ID取 `numIid`（铺货接口必须用 ERP 内部ID）→ 自动预查并默认选**首个有效轻出海商户店**（`shopType=SHOPEE_MERCHANT`，与浏览器弹窗默认一致）→ 构造 `distribItemVos` → 每批4个串行提交 `POST /item/distribute/batchPublish`。返回「已进入发布队列」即成功。
 - 需要指定店铺时 `--shop <轻出海商户店sellerId>`；传普通站点授权店会警告（不参与轻出海铺货，任务不会正常发布）。店铺可用 `shops --platform shopees` 预查（输出含轻出海商户店数）。
+- **提交前拦截自检（全自动，命中即剔除/重采/改配置/清洗标题，不提交）**：按 selection-rules 四附四道关卡执行——①选品价差预检（第一节第9条/第三节第4条，卷材/多尺寸/磅数分档类直接换品；标题含"可定制/印logo/刻字"的过四附关卡1可定制品三道检查——规格/模式/交付，定制驱动品跳过、能力标签品按标准款卖）；②采集后主图防盗链/404 检查（sorry 占位图、高度<32、404 先重采刷新再铺；**描述图接口取不到，此类失败后直接换同款，重采幂等不刷新**）；③库存沿用"使用商品来源"，不手填超界值；④标题清洗（Step4.6，剔除平台名+行话前缀）。实测近1个月35条失败中21条（60%，含图片伴生记录为71%）可在此拦下。
 - 结算价模板、库存、发货方式沿用 ERP 已保存配置，不每次重算、不暂停确认（接口不传 `publishConfig` 即用默认）。
 - **浏览器兜底**：接口报错/改版时进公共采集箱，只勾选本次清单商品行 → 点"铺货至Shopee轻出海" → 弹窗自动勾选首个轻出海店铺 → 沿用模板 → 点"开始铺货"，代码见 `references/browser-recipes.md` 第5节。仅当出现登录/验证码/支付弹窗时才转人工接管。
 
 ### Step 6 发布记录统计（接口优先，终态需等待）
 - **接口（默认）**：`python3 scripts/erp_api_client.py logs --months 1 --out ./erp_data`，输出按货源ID逐条归类 + 状态分布 + 失败原因（`status`：success=发布成功、fail=发布失败、processing=发布中、examine=审核中）。统计口径见下；命令见 `references/erp-api.md` 第3节。
 - **失败自动归因（推荐）**：`python3 scripts/erp_api_client.py logs --months 1 --advice --out ./erp_data`，失败记录自动对照 selection-rules 第五节归因库，附加「严重度/处理建议」列（整品失败=弃品换单规格、可重试=改后重提、单站点=忽略或补站点、撞红线=剔除）；未收录的抄录原文人工归因，CSV/JSON 同写。
+- **失败处置策略（按归因级别处置，不要全部进编辑页改；Shopee 校验的是提交的规格/图片/库存数据，改 1688 原品无效，除非重采同步）**：整品失败（规格价差>7倍）→ 直接弃品换单规格offer，不编辑；图片防盗链/404 → 重采刷新即可，不是商品问题；规格结构缺漏（属性为空/层级超2层/映像错乱）→ 编辑采集箱商品规格后保存重提；单站点（层变体名重复）→ 可忽略或补该站点重提；原因为空 → 打开 ERP 发布记录页人工查该货源ID站点级状态再归因，勿盲目重提。判定细则见 selection-rules 第五节处置时机速查。
 - **浏览器兜底**：接口报错/改版时进「Shopee轻出海-发布记录」按货源ID逐条归类，代码见 references/browser-recipes.md 第6节。
 - 审核/上传为异步，现场等待不改变终态；记录初始快照，告知用户稍后刷新复核。
 - 终态回来后用 `published_ledger.py status --ids <offerId> --status 发布成功/发布失败` 更新台账；发布失败的按归因库处理，不在台账里自动删除。
@@ -116,8 +130,11 @@ description: "Shopee 轻出海铺货实操，仅适用于『快递助手ERP跨�
 ## References
 - `references/api-candidates.md`：Step1/2 只读接口说明、命令、字段、口径警告与回退方式。取候选前必读。
 - `references/erp-api.md`：Step3-6 ERP 接口（采集提交/采集箱/发布记录/店铺/铺货提交）契约、token 维护、命令、已知坑与回退方式。采集/对账/去重/统计/店铺预查/铺货提交前必读。
-- `references/selection-rules.md`：AI自动剔除的红线清单、Step1打分规则、Step2同类自动匹配规则、结算价说明、失败原因归因库。判定前必读。
+- `references/selection-rules.md`：AI自动剔除的红线清单、Step1打分规则、Step2同类自动匹配规则、结算价说明、失败原因归因库、第七节=站点策略映射与输入参数组默认口径（--strategy/--market 等）。判定前必读。
 - `references/browser-recipes.md`：bu 代码片段；第1/2节为遨虾接口失效兜底，第3-7节为 ERP 采集/对账/铺货/统计/去重比对兜底（Step3-6 默认走接口，接口失效时用），执行时复制并按当前页面调整。
 - `scripts/aibuy_rank_client.py`：Step1/2 只读客户端（纯标准库）。
 - `scripts/erp_api_client.py`：Step3-6 ERP 接口客户端（纯标准库，token 存 `scripts/erp_token.txt`；含 collect/distribute 写操作命令）。
+- `scripts/update_erp_item.py`：采集箱商品编辑（query/update/batch 改标题；batch 读 csv: numIid,erpCode,new_title，内置限速+回读验证）。发布失败需改标题时用。
+- `scripts/clean_title.py`：标题清洗（单条 clean / 批量 clean-all；自动剔除平台名亚马逊/ebay/速卖通等+行话前缀跨境/外贸/出口/原单等；支持 --dry-run；写回采集箱并回读验证）。Step4.6 用。
+- `scripts/repair_erp_item.py`：发布失败商品结构修复（`--mode`：single_tier 规格层精简到1层并同步清 skuPropertyList / price_cap 删极端价格SKU压价差≤7倍 / fix_imgs 删宽高比超限图 / unify_pic 变体三图字段统一主图；`--keep-title` 防标题被原样回写）。失败归因处置按 selection-rules 第五节速查。
 - `scripts/published_ledger.py`：Step4.5 本地已发台账（check/append/list，纯标准库）。
